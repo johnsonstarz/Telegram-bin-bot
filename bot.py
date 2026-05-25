@@ -1,6 +1,5 @@
 import logging
 import os
-import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -38,35 +37,37 @@ cache = BINCache()
 
 
 def split_into_blocks(text):
+
     blocks = []
 
-    pattern = r"(\+ .*?-+\+.*?(?=\+ .*?-+\+|\Z))"
+    current_block = []
 
-    matches = re.findall(
-        pattern,
-        text,
-        flags=re.DOTALL
-    )
+    lines = text.splitlines()
 
-    for match in matches:
-        clean = match.strip()
-        if clean:
-            blocks.append(clean)
+    for line in lines:
+
+        if (
+            line.startswith("+ -------------")
+            and current_block
+        ):
+
+            joined = "\n".join(current_block)
+
+            if "BIN :" in joined:
+                blocks.append(joined)
+
+            current_block = []
+
+        current_block.append(line)
+
+    if current_block:
+
+        joined = "\n".join(current_block)
+
+        if "BIN :" in joined:
+            blocks.append(joined)
 
     return blocks
-
-
-def get_bank_from_block(block):
-    match = re.search(
-        r'BANK\s*-\s*(.+)',
-        block,
-        re.IGNORECASE
-    )
-
-    if match:
-        return match.group(1).strip()
-
-    return ""
 
 
 async def start(
@@ -92,7 +93,10 @@ async def handle_document(
     tg_file = await message.document.get_file()
 
     downloads_dir = Path("downloads")
-    downloads_dir.mkdir(exist_ok=True)
+
+    downloads_dir.mkdir(
+        exist_ok=True
+    )
 
     input_path = (
         downloads_dir
@@ -138,6 +142,7 @@ async def output_handler(
 ):
 
     query = update.callback_query
+
     await query.answer()
 
     output_path = Path(
@@ -154,28 +159,26 @@ async def output_handler(
     blocks = split_into_blocks(text)
 
     if query.data == "out_original":
+
         filtered = blocks
         label = "original"
 
-    elif query.data == "out_sorted":
-        filtered = sorted(
-            blocks,
-            key=get_bank_from_block
-        )
-        label = "sorted"
-
     elif query.data == "out_debit":
+
         filtered = [
             b for b in blocks
             if "TYPE - DEBIT" in b.upper()
         ]
+
         label = "debit_only"
 
     elif query.data == "out_credit":
+
         filtered = [
             b for b in blocks
             if "TYPE - CREDIT" in b.upper()
         ]
+
         label = "credit_only"
 
     else:
@@ -183,17 +186,26 @@ async def output_handler(
 
     out_text = "\n\n".join(filtered)
 
-    out_bytes = out_text.encode("utf-8")
-
-    await query.message.reply_document(
-        document=out_bytes,
-        filename=f"{label}_{input_name}",
-        caption=(
-            f"✅ "
-            f"{label.replace('_', ' ').title()}"
-            f" — {len(filtered)} records"
-        ),
+    temp_output = Path(
+        f"{label}_{input_name}"
     )
+
+    temp_output.write_text(
+        out_text,
+        encoding="utf-8",
+    )
+
+    with open(temp_output, "rb") as f:
+
+        await query.message.reply_document(
+            document=f,
+            filename=temp_output.name,
+            caption=(
+                f"✅ "
+                f"{label.replace('_', ' ').title()}"
+                f" — {len(filtered)} records"
+            ),
+        )
 
 
 async def button_handler(
@@ -269,12 +281,6 @@ async def button_handler(
                     InlineKeyboardButton(
                         "📄 ORIGINAL",
                         callback_data="out_original",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "🏦 SORTED",
-                        callback_data="out_sorted",
                     )
                 ],
                 [
