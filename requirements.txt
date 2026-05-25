@@ -1,5 +1,5 @@
 # Telegram Bot framework (v21.x — async-first)
-python-telegram-bot==21.6
+python-telegram-bot==20.7
 
 # Async HTTP client (for binlist.net lookups)
 aiohttp==3.10.5
