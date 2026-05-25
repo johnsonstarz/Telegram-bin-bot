@@ -16,19 +16,16 @@ logger = logging.getLogger(__name__)
 # BIN:448297
 # BIN-448297
 BIN_PATTERN = re.compile(
-    r"BIN\s*[:\-]\s*(\d{6})",
+    r"(BIN\s*[:\-]\s*(\d{6}))",
     re.IGNORECASE,
 )
 
-# APIs
 BINX_URL = "https://binx.vip/bin/{bin}"
 BINLIST_URL = "https://lookup.binlist.net/{bin}"
 
-# Process 20 lookups simultaneously
 MAX_CONCURRENT_LOOKUPS = 20
 
-# Timeout
-HTTP_TIMEOUT = aiohttp.ClientTimeout(total=10)
+HTTP_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
 def _unknown_metadata():
@@ -74,33 +71,44 @@ async def _fetch_from_binx(
 
             upper = text.upper()
 
-            brand = "UNKNOWN"
-            card_type = "UNKNOWN"
-            level = "UNKNOWN"
-            bank = "UNKNOWN"
+            metadata = {
+                "brand": "UNKNOWN",
+                "type": "UNKNOWN",
+                "level": "UNKNOWN",
+                "bank": "UNKNOWN",
+            }
 
             # BRAND
-            if "VISA" in upper:
-                brand = "VISA"
+            brands = [
+                "VISA",
+                "MASTERCARD",
+                "AMEX",
+                "DISCOVER",
+                "JCB",
+                "DINERS",
+            ]
 
-            elif "MASTERCARD" in upper:
-                brand = "MASTERCARD"
+            for brand in brands:
 
-            elif "AMEX" in upper:
-                brand = "AMEX"
+                if brand in upper:
 
-            elif "DISCOVER" in upper:
-                brand = "DISCOVER"
+                    metadata["brand"] = brand
+                    break
 
             # TYPE
-            if "DEBIT" in upper:
-                card_type = "DEBIT"
+            types = [
+                "DEBIT",
+                "CREDIT",
+                "PREPAID",
+                "BUSINESS",
+            ]
 
-            elif "CREDIT" in upper:
-                card_type = "CREDIT"
+            for t in types:
 
-            elif "PREPAID" in upper:
-                card_type = "PREPAID"
+                if t in upper:
+
+                    metadata["type"] = t
+                    break
 
             # LEVEL
             levels = [
@@ -109,41 +117,60 @@ async def _fetch_from_binx(
                 "PLATINUM",
                 "SIGNATURE",
                 "WORLD",
+                "WORLD ELITE",
                 "BUSINESS",
                 "INFINITE",
+                "ELECTRON",
             ]
 
             for lvl in levels:
 
                 if lvl in upper:
-                    level = lvl
+
+                    metadata["level"] = lvl
                     break
 
-            # BANK
-            banks = [
-                "CHASE",
-                "BANK OF AMERICA",
-                "WELLS FARGO",
-                "CAPITAL ONE",
-                "CITI",
-                "TD BANK",
-                "PNC",
-                "US BANK",
-                "NAVY FEDERAL",
+            # DYNAMIC BANK EXTRACTION
+            bank_patterns = [
+
+                r"BANK\s*[:\-]\s*([A-Z0-9 .,&'\-]+)",
+
+                r"ISSUER\s*[:\-]\s*([A-Z0-9 .,&'\-]+)",
+
+                r"FINANCIAL INSTITUTION\s*[:\-]\s*([A-Z0-9 .,&'\-]+)",
+
             ]
 
-            for b in banks:
+            for pattern in bank_patterns:
 
-                if b in upper:
-                    bank = b
-                    break
+                match = re.search(
+                    pattern,
+                    upper,
+                )
 
-            return {
-                "brand": brand,
-                "type": card_type,
-                "level": level,
-                "bank": bank,
-            }
+                if match:
+
+                    extracted = (
+                        match.group(1)
+                        .strip()
+                    )
+
+                    extracted = extracted.split(
+                        "|"
+                    )[0].strip()
+
+                    if (
+                        extracted
+                        and len(extracted) > 2
+                    ):
+
+                        metadata["bank"] = (
+                            extracted
+                        )
+
+                        break
+
+            return metadata
 
     except Exception as e:
 
@@ -179,36 +206,30 @@ async def _fetch_from_binlist(
                 content_type=None
             )
 
-            brand = (
-                data.get("scheme")
-                or "UNKNOWN"
-            ).upper()
-
-            card_type = (
-                data.get("type")
-                or "UNKNOWN"
-            ).upper()
-
-            level = (
-                data.get("brand")
-                or "UNKNOWN"
-            ).upper()
-
-            bank_obj = (
-                data.get("bank")
-                or {}
-            )
-
-            bank = (
-                bank_obj.get("name")
-                or "UNKNOWN"
-            ).upper()
-
             return {
-                "brand": brand,
-                "type": card_type,
-                "level": level,
-                "bank": bank,
+
+                "brand": (
+                    data.get("scheme")
+                    or "UNKNOWN"
+                ).upper(),
+
+                "type": (
+                    data.get("type")
+                    or "UNKNOWN"
+                ).upper(),
+
+                "level": (
+                    data.get("brand")
+                    or "UNKNOWN"
+                ).upper(),
+
+                "bank": (
+                    (
+                        data.get("bank")
+                        or {}
+                    ).get("name")
+                    or "UNKNOWN"
+                ).upper(),
             }
 
     except Exception as e:
@@ -253,10 +274,30 @@ async def fetch_bin_metadata(
             or metadata["brand"] == "UNKNOWN"
         ):
 
-            metadata = await _fetch_from_binlist(
+            fallback = await _fetch_from_binlist(
                 session,
                 bin_number,
             )
+
+            if fallback:
+
+                # Fill missing fields only
+                for key in fallback:
+
+                    if (
+                        metadata is None
+                        or metadata[key]
+                        == "UNKNOWN"
+                    ):
+
+                        if fallback[key] != "UNKNOWN":
+
+                            if metadata is None:
+                                metadata = {}
+
+                            metadata[key] = fallback[
+                                key
+                            ]
 
         if metadata is None:
 
@@ -289,7 +330,7 @@ async def process_file(
 
     unique_bins = set()
 
-    # PASS 1 → collect ALL BINs
+    # PASS 1
     with input_path.open(
         "r",
         encoding="utf-8",
@@ -302,7 +343,7 @@ async def process_file(
                 line
             )
 
-            for bin_number in matches:
+            for full_match, bin_number in matches:
 
                 unique_bins.add(
                     bin_number
@@ -314,7 +355,7 @@ async def process_file(
 
     bin_metadata = {}
 
-    # FETCH ALL UNIQUE BINS
+    # FETCH BIN DATA
     async with aiohttp.ClientSession(
         headers={
             "User-Agent": "BINLookupBot/1.0"
@@ -361,7 +402,7 @@ async def process_file(
                 bin_num
             ] = result
 
-    # WRITE OUTPUT FILE
+    # OUTPUT FILE
     tmp_fd, tmp_path_str = tempfile.mkstemp(
         suffix=".txt"
     )
@@ -392,37 +433,36 @@ async def process_file(
                 line
             )
 
-            if matches:
+            if not matches:
 
-                stripped = line.rstrip(
-                    "\r\n"
+                outfile.write(line)
+                continue
+
+            output_parts = []
+
+            for full_match, bin_number in matches:
+
+                stats["bins_found"] += 1
+
+                metadata = bin_metadata.get(
+                    bin_number,
+                    _unknown_metadata(),
                 )
 
-                newline = line[
-                    len(stripped):
-                ]
-
-                for bin_number in matches:
-
-                    stats["bins_found"] += 1
-
-                    metadata = (
-                        bin_metadata.get(
-                            bin_number,
-                            _unknown_metadata(),
-                        )
+                clean = (
+                    full_match
+                    + _format_metadata(
+                        metadata
                     )
+                )
 
-                    suffix = (
-                        _format_metadata(
-                            metadata
-                        )
-                    )
+                output_parts.append(
+                    clean
+                )
 
-                    stripped += suffix
-
-                line = stripped + newline
-
-            outfile.write(line)
+            outfile.write(
+                " | ".join(output_parts)
+                + "\n"
+            )
 
     return tmp_path, stats
