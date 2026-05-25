@@ -38,24 +38,25 @@ cache = BINCache()
 
 
 def split_into_blocks(text):
+    blocks = []
 
-    pattern = r'(\+ -{4,}.*?\+.*?\+ -{4,}.*?\+.*?(?=\+ -{4,}|\Z))'
+    pattern = r"(\+ .*?-+\+.*?(?=\+ .*?-+\+|\Z))"
 
     matches = re.findall(
         pattern,
         text,
-        re.DOTALL
+        flags=re.DOTALL
     )
 
-    return [
-        block.strip()
-        for block in matches
-        if block.strip()
-    ]
+    for match in matches:
+        clean = match.strip()
+        if clean:
+            blocks.append(clean)
+
+    return blocks
 
 
 def get_bank_from_block(block):
-
     match = re.search(
         r'BANK\s*-\s*(.+)',
         block,
@@ -137,7 +138,6 @@ async def output_handler(
 ):
 
     query = update.callback_query
-
     await query.answer()
 
     output_path = Path(
@@ -154,39 +154,28 @@ async def output_handler(
     blocks = split_into_blocks(text)
 
     if query.data == "out_original":
-
         filtered = blocks
         label = "original"
 
     elif query.data == "out_sorted":
-
         filtered = sorted(
             blocks,
             key=get_bank_from_block
         )
-
         label = "sorted"
 
     elif query.data == "out_debit":
-
         filtered = [
-            block
-            for block in blocks
-            if "TYPE - DEBIT"
-            in block.upper()
+            b for b in blocks
+            if "TYPE - DEBIT" in b.upper()
         ]
-
         label = "debit_only"
 
     elif query.data == "out_credit":
-
         filtered = [
-            block
-            for block in blocks
-            if "TYPE - CREDIT"
-            in block.upper()
+            b for b in blocks
+            if "TYPE - CREDIT" in b.upper()
         ]
-
         label = "credit_only"
 
     else:
@@ -194,26 +183,17 @@ async def output_handler(
 
     out_text = "\n\n".join(filtered)
 
-    temp_output = Path(
-        f"{label}_{input_name}"
+    out_bytes = out_text.encode("utf-8")
+
+    await query.message.reply_document(
+        document=out_bytes,
+        filename=f"{label}_{input_name}",
+        caption=(
+            f"✅ "
+            f"{label.replace('_', ' ').title()}"
+            f" — {len(filtered)} records"
+        ),
     )
-
-    temp_output.write_text(
-        out_text,
-        encoding="utf-8",
-    )
-
-    with open(temp_output, "rb") as f:
-
-        await query.message.reply_document(
-            document=f,
-            filename=temp_output.name,
-            caption=(
-                f"✅ "
-                f"{label.replace('_', ' ').title()}"
-                f" — {len(filtered)} records"
-            ),
-        )
 
 
 async def button_handler(
