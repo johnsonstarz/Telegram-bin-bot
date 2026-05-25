@@ -11,23 +11,39 @@ from cache import BINCache
 
 logger = logging.getLogger(__name__)
 
-# Match:
+# ----------------------------------------
+# MATCH:
 # BIN : 448297
 # BIN:448297
 # BIN-448297
+# ----------------------------------------
 BIN_PATTERN = re.compile(
     r"(BIN\s*[:\-]\s*(\d{6}))",
     re.IGNORECASE,
 )
 
+# ----------------------------------------
+# APIs
+# ----------------------------------------
 BINX_URL = "https://binx.vip/bin/{bin}"
 BINLIST_URL = "https://lookup.binlist.net/{bin}"
 
+# ----------------------------------------
+# PROCESS 20 LOOKUPS AT ONCE
+# ----------------------------------------
 MAX_CONCURRENT_LOOKUPS = 20
 
-HTTP_TIMEOUT = aiohttp.ClientTimeout(total=15)
+# ----------------------------------------
+# TIMEOUT
+# ----------------------------------------
+HTTP_TIMEOUT = aiohttp.ClientTimeout(
+    total=15
+)
 
 
+# ----------------------------------------
+# UNKNOWN FALLBACK
+# ----------------------------------------
 def _unknown_metadata():
 
     return {
@@ -38,6 +54,9 @@ def _unknown_metadata():
     }
 
 
+# ----------------------------------------
+# FORMAT OUTPUT
+# ----------------------------------------
 def _format_metadata(metadata):
 
     return (
@@ -48,6 +67,9 @@ def _format_metadata(metadata):
     )
 
 
+# ----------------------------------------
+# BINX LOOKUP
+# ----------------------------------------
 async def _fetch_from_binx(
     session,
     bin_number,
@@ -69,7 +91,12 @@ async def _fetch_from_binx(
 
             text = await resp.text()
 
-            upper = text.upper()
+            # CLEAN HTML SPACING
+            clean = re.sub(
+                r"\s+",
+                " ",
+                text,
+            ).upper()
 
             metadata = {
                 "brand": "UNKNOWN",
@@ -78,59 +105,72 @@ async def _fetch_from_binx(
                 "bank": "UNKNOWN",
             }
 
-            # ---------- NETWORK ----------
-            network_match = re.search(
-                r"NETWORK\s+([A-Z ]+)",
-                upper,
-            )
-
-            if network_match:
-
-                metadata["brand"] = (
-                    network_match
-                    .group(1)
-                    .strip()
-                )
-
-            # ---------- TYPE ----------
-            type_match = re.search(
-                r"TYPE\s+([A-Z ]+)",
-                upper,
-            )
-
-            if type_match:
-
-                metadata["type"] = (
-                    type_match
-                    .group(1)
-                    .strip()
-                )
-
-            # ---------- CATEGORY ----------
-            category_match = re.search(
-                r"CATEGORY\s+([A-Z ]+)",
-                upper,
-            )
-
-            if category_match:
-
-                metadata["level"] = (
-                    category_match
-                    .group(1)
-                    .strip()
-                )
-
-            # ---------- BANK ----------
+            # ----------------------------------------
+            # BANK
+            # Example:
+            # 473703 WELLS FARGO BANK...
+            # UNITED STATES • CLASSIC
+            # ----------------------------------------
             bank_match = re.search(
-                r"BANK\s+([A-Z0-9 .,&'\-]+)",
-                upper,
+                rf"{bin_number}\s+([A-Z0-9 .,&'\-]+?)\s+UNITED STATES",
+                clean,
             )
 
             if bank_match:
 
                 metadata["bank"] = (
-                    bank_match
-                    .group(1)
+                    bank_match.group(1)
+                    .strip()
+                )
+
+            # ----------------------------------------
+            # LEVEL
+            # Example:
+            # UNITED STATES • CLASSIC
+            # ----------------------------------------
+            level_match = re.search(
+                r"UNITED STATES\s*•\s*([A-Z ]+)",
+                clean,
+            )
+
+            if level_match:
+
+                metadata["level"] = (
+                    level_match.group(1)
+                    .strip()
+                )
+
+            # ----------------------------------------
+            # NETWORK
+            # Example:
+            # NETWORK VISA
+            # ----------------------------------------
+            network_match = re.search(
+                r"NETWORK\s+([A-Z]+)",
+                clean,
+            )
+
+            if network_match:
+
+                metadata["brand"] = (
+                    network_match.group(1)
+                    .strip()
+                )
+
+            # ----------------------------------------
+            # TYPE
+            # Example:
+            # TYPE DEBIT
+            # ----------------------------------------
+            type_match = re.search(
+                r"TYPE\s+([A-Z]+)",
+                clean,
+            )
+
+            if type_match:
+
+                metadata["type"] = (
+                    type_match.group(1)
                     .strip()
                 )
 
@@ -147,6 +187,9 @@ async def _fetch_from_binx(
         return None
 
 
+# ----------------------------------------
+# BINLIST FALLBACK
+# ----------------------------------------
 async def _fetch_from_binlist(
     session,
     bin_number,
@@ -207,6 +250,9 @@ async def _fetch_from_binlist(
         return None
 
 
+# ----------------------------------------
+# FETCH BIN DATA
+# ----------------------------------------
 async def fetch_bin_metadata(
     session,
     bin_number,
@@ -215,6 +261,7 @@ async def fetch_bin_metadata(
     stats,
 ):
 
+    # CACHE FIRST
     cached = cache.get(
         bin_number
     )
@@ -233,37 +280,32 @@ async def fetch_bin_metadata(
         )
 
         # FALLBACK TO BINLIST
+        fallback = await _fetch_from_binlist(
+            session,
+            bin_number,
+        )
+
         if metadata is None:
 
-            metadata = await _fetch_from_binlist(
-                session,
-                bin_number,
-            )
+            metadata = fallback
 
-        else:
+        elif fallback:
 
-            fallback = await _fetch_from_binlist(
-                session,
-                bin_number,
-            )
+            for key in fallback:
 
-            if fallback:
-
-                for key in fallback:
+                if (
+                    metadata[key]
+                    == "UNKNOWN"
+                ):
 
                     if (
-                        metadata[key]
-                        == "UNKNOWN"
+                        fallback[key]
+                        != "UNKNOWN"
                     ):
 
-                        if (
+                        metadata[key] = (
                             fallback[key]
-                            != "UNKNOWN"
-                        ):
-
-                            metadata[key] = (
-                                fallback[key]
-                            )
+                        )
 
         if metadata is None:
 
@@ -281,6 +323,9 @@ async def fetch_bin_metadata(
         return metadata
 
 
+# ----------------------------------------
+# PROCESS FILE
+# ----------------------------------------
 async def process_file(
     input_path: Path,
     cache: BINCache,
@@ -296,7 +341,9 @@ async def process_file(
 
     unique_bins = set()
 
-    # PASS 1
+    # ----------------------------------------
+    # PASS 1 → COLLECT UNIQUE BINS
+    # ----------------------------------------
     with input_path.open(
         "r",
         encoding="utf-8",
@@ -321,7 +368,9 @@ async def process_file(
 
     bin_metadata = {}
 
-    # FETCH BIN DATA
+    # ----------------------------------------
+    # FETCH ALL BIN DATA
+    # ----------------------------------------
     async with aiohttp.ClientSession(
         headers={
             "User-Agent": "BINLookupBot/1.0"
@@ -368,7 +417,9 @@ async def process_file(
                 bin_num
             ] = result
 
+    # ----------------------------------------
     # OUTPUT FILE
+    # ----------------------------------------
     tmp_fd, tmp_path_str = tempfile.mkstemp(
         suffix=".txt"
     )
