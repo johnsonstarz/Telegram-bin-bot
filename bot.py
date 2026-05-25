@@ -1,441 +1,183 @@
-import asyncio
 import logging
 import os
-import tempfile
-from contextlib import suppress
+from pathlib import Path
 
-from aiohttp import ClientSession
+from dotenv import load_dotenv
+
 from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Update,
+Update,
+InlineKeyboardButton,
+InlineKeyboardMarkup,
 )
-from telegram.constants import ChatAction
+
 from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
+Application,
+CommandHandler,
+ContextTypes,
+MessageHandler,
+CallbackQueryHandler,
+filters,
 )
 
-from processor import (
-    analyze_file,
-    build_output,
-)
+from cache import BINCache
+from processor import process_file
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+load_dotenv()
+
+TOKEN = os.getenv(“BOT_TOKEN”)
 
 logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=logging.INFO,
+format=”%(asctime)s | %(levelname)s | %(name)s | %(message)s”,
+level=logging.INFO,
 )
 
-logger = logging.getLogger("telegram-file-bot")
+logger = logging.getLogger(name)
 
-LOADING_FRAMES = [
-    "🔍",
-    "⏳",
-    "⚡",
-    "📡",
-    "🔄",
-]
-
+cache = BINCache()
 
 async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+update: Update,
+context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    await update.message.reply_text(
-        "Send a TXT file to begin processing."
-    )
-
-
-async def loading_animation(
-    message,
-    stop_event: asyncio.Event,
-):
-
-    idx = 0
-
-    while not stop_event.is_set():
-
-        try:
-
-            frame = LOADING_FRAMES[
-                idx % len(LOADING_FRAMES)
-            ]
-
-            await message.edit_text(
-                f"{frame} Processing file..."
-            )
-
-            idx += 1
-
-            await asyncio.sleep(0.7)
-
-        except Exception:
-
-            await asyncio.sleep(0.7)
-
+await update.message.reply_text(
+    "Send a TXT file containing BINs."
+)
 
 async def handle_document(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+update: Update,
+context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    document = update.message.document
-
-    if not document.file_name.lower().endswith(".txt"):
-
-        await update.message.reply_text(
-            "Only TXT files are supported."
+message = update.message
+if not message.document:
+    return
+tg_file = await message.document.get_file()
+downloads_dir = Path("downloads")
+downloads_dir.mkdir(exist_ok=True)
+input_path = (
+    downloads_dir
+    / message.document.file_name
+)
+await tg_file.download_to_drive(
+    custom_path=str(input_path)
+)
+context.user_data["input_path"] = str(
+    input_path
+)
+keyboard = [
+    [
+        InlineKeyboardButton(
+            "✅ Continue Processing",
+            callback_data="continue_process",
         )
+    ],
+    [
+        InlineKeyboardButton(
+            "❌ Cancel",
+            callback_data="cancel_process",
+        )
+    ],
+]
+reply_markup = InlineKeyboardMarkup(
+    keyboard
+)
+await message.reply_text(
+    "⚠️ Save your file before continuing.",
+    reply_markup=reply_markup,
+)
 
-        return
+async def button_handler(
+update: Update,
+context: ContextTypes.DEFAULT_TYPE,
+):
 
-    temp_dir = tempfile.mkdtemp(
-        prefix="tgfile_"
+query = update.callback_query
+await query.answer()
+if query.data == "cancel_process":
+    await query.edit_message_text(
+        "❌ Processing cancelled."
     )
-
-    temp_path = os.path.join(
-        temp_dir,
-        document.file_name,
+    return
+if query.data == "continue_process":
+    await query.edit_message_text(
+        "🔍 Processing your file...\nPlease wait."
     )
-
+    input_path = Path(
+        context.user_data["input_path"]
+    )
     try:
-
-        telegram_file = await document.get_file()
-
-        await update.message.chat.send_action(
-            ChatAction.UPLOAD_DOCUMENT
+        output_path, stats = await process_file(
+            input_path,
+            cache,
         )
-
-        async with ClientSession() as session:
-
-            async with session.get(
-                telegram_file.file_path
-            ) as response:
-
-                response.raise_for_status()
-
-                with open(
-                    temp_path,
-                    "wb",
-                ) as f:
-
-                    while True:
-
-                        chunk = await response.content.read(
-                            1024 * 1024
-                        )
-
-                        if not chunk:
-                            break
-
-                        f.write(chunk)
-
-        context.user_data[
-            "uploaded_file"
-        ] = temp_path
-
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "CONTINUE",
-                        callback_data="continue_processing",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "CANCEL",
-                        callback_data="cancel_processing",
-                    )
-                ],
-            ]
+        analysis_text = (
+            "📊 FILE ANALYSIS\n\n"
         )
-
-        await update.message.reply_text(
-            "⚠️ Save your file before continuing.",
-            reply_markup=keyboard,
-        )
-
-    except Exception as e:
-
-        logger.exception(
-            "Failed to download file"
-        )
-
-        await update.message.reply_text(
-            f"Error downloading file:\n{e}"
-        )
-
-
-async def handle_callbacks(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-
-    await query.answer()
-
-    data = query.data
-
-    if data == "cancel_processing":
-
-        await query.edit_message_text(
-            "Operation cancelled."
-        )
-
-        cleanup_temp(context)
-
-        return
-
-    if data == "continue_processing":
-
-        file_path = context.user_data.get(
-            "uploaded_file"
-        )
-
-        if (
-            not file_path
-            or not os.path.exists(file_path)
-        ):
-
-            await query.edit_message_text(
-                "Uploaded file not found."
+        top_banks = stats["bank_counts"].most_common(3)
+        for bank, count in top_banks:
+            analysis_text += (
+                f"{count}x {bank}\n"
             )
-
-            return
-
-        loading_msg = await query.message.reply_text(
-            "🔍 Processing file..."
+        analysis_text += (
+            f"\nDebit: {stats['debit_count']}\n"
+            f"Credit: {stats['credit_count']}\n\n"
+            "Choose Output:\n"
+            "[ ORIGINAL ]\n"
+            "[ SORTED 🏦 ]\n"
+            "[ DEBIT ONLY ]\n"
+            "[ CREDIT ONLY ]"
         )
-
-        stop_event = asyncio.Event()
-
-        animation_task = asyncio.create_task(
-            loading_animation(
-                loading_msg,
-                stop_event,
-            )
+        await query.message.reply_text(
+            analysis_text
         )
-
-        try:
-
-            analysis = await analyze_file(
-                file_path
-            )
-
-            context.user_data[
-                "analysis"
-            ] = analysis
-
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "ORIGINAL",
-                            callback_data="output_original",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "SORTED",
-                            callback_data="output_sorted",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "TYPE A ONLY",
-                            callback_data="output_type_a",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "TYPE B ONLY",
-                            callback_data="output_type_b",
-                        )
-                    ],
-                ]
-            )
-
-            text = (
-                "📊 FILE ANALYSIS\n\n"
-                f"{analysis['category_a']}x Category A\n"
-                f"{analysis['category_b']}x Category B\n"
-                f"{analysis['category_c']}x Category C\n\n"
-                f"Type A: {analysis['type_a']}\n"
-                f"Type B: {analysis['type_b']}\n\n"
-                "Choose Output:"
-            )
-
-            stop_event.set()
-
-            with suppress(Exception):
-
-                await animation_task
-
-            with suppress(Exception):
-
-                await loading_msg.delete()
-
-            await query.message.reply_text(
-                text,
-                reply_markup=keyboard,
-            )
-
-        except Exception as e:
-
-            logger.exception(
-                "Processing failed"
-            )
-
-            stop_event.set()
-
-            with suppress(Exception):
-
-                await animation_task
-
-            with suppress(Exception):
-
-                await loading_msg.delete()
-
-            await query.message.reply_text(
-                f"Processing failed:\n{e}"
-            )
-
-    elif data.startswith("output_"):
-
-        analysis = context.user_data.get(
-            "analysis"
-        )
-
-        if not analysis:
-
-            await query.edit_message_text(
-                "Session expired."
-            )
-
-            return
-
-        mode_map = {
-            "output_original": "original",
-            "output_sorted": "sorted",
-            "output_type_a": "type_a",
-            "output_type_b": "type_b",
-        }
-
-        mode = mode_map[data]
-
-        output_lines = await build_output(
-            analysis,
-            mode,
-        )
-
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=".txt",
-            mode="w",
-            encoding="utf-8",
-        ) as tmp:
-
-            tmp.write(
-                "\n".join(output_lines)
-            )
-
-            output_path = tmp.name
-
-        try:
-
+        with open(output_path, "rb") as f:
             await query.message.reply_document(
-                document=open(
-                    output_path,
-                    "rb",
+                document=f,
+                filename=f"processed_{input_path.name}",
+                caption=(
+                    f"✅ Processing Complete\n\n"
+                    f"Lines: {stats['total_lines']}\n"
+                    f"BINs: {stats['bins_found']}\n"
+                    f"API Calls: {stats['api_calls']}\n"
+                    f"Cache Hits: {stats['cache_hits']}\n"
+                    f"Errors: {stats['errors']}"
                 ),
-                filename=f"{mode}_output.txt",
-                caption="Processing complete.",
             )
-
-        finally:
-
-            with suppress(Exception):
-
-                os.remove(output_path)
-
-            cleanup_temp(context)
-
-
-def cleanup_temp(context):
-
-    file_path = context.user_data.get(
-        "uploaded_file"
-    )
-
-    if (
-        file_path
-        and os.path.exists(file_path)
-    ):
-
-        with suppress(Exception):
-
-            os.remove(file_path)
-
-        with suppress(Exception):
-
-            os.rmdir(
-                os.path.dirname(file_path)
-            )
-
-    context.user_data.clear()
-
+    except Exception as e:
+        logger.exception(e)
+        await query.message.reply_text(
+            f"❌ Error:\n{e}"
+        )
 
 def main():
 
-    if not BOT_TOKEN:
-
-        raise RuntimeError(
-            "BOT_TOKEN environment variable missing"
-        )
-
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .concurrent_updates(True)
-        .build()
+if not TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN missing in environment"
     )
-
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start,
-        )
+application = (
+    Application.builder()
+    .token(TOKEN)
+    .build()
+)
+application.add_handler(
+    CommandHandler("start", start)
+)
+application.add_handler(
+    MessageHandler(
+        filters.Document.ALL,
+        handle_document,
     )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Document.ALL,
-            handle_document,
-        )
+)
+application.add_handler(
+    CallbackQueryHandler(
+        button_handler
     )
+)
+logger.info("Starting bot")
+application.run_polling()
 
-    application.add_handler(
-        CallbackQueryHandler(
-            handle_callbacks
-        )
-    )
+if name == “main”:
 
-    logger.info("Bot started")
-
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES
-    )
-
-
-if __name__ == "__main__":
-
-    main()
+main()
