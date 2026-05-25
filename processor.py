@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Tuple, Dict, Any
 
 import aiohttp
+from bs4 import BeautifulSoup
 
 from cache import BINCache
 
@@ -29,13 +30,10 @@ BINX_URL = "https://binx.vip/bin/{bin}"
 BINLIST_URL = "https://lookup.binlist.net/{bin}"
 
 # ----------------------------------------
-# PROCESS 20 LOOKUPS AT ONCE
+# LOOKUP SETTINGS
 # ----------------------------------------
 MAX_CONCURRENT_LOOKUPS = 20
 
-# ----------------------------------------
-# TIMEOUT
-# ----------------------------------------
 HTTP_TIMEOUT = aiohttp.ClientTimeout(
     total=15
 )
@@ -75,11 +73,11 @@ async def _fetch_from_binx(
     bin_number,
 ):
 
-    url = BINX_URL.format(
-        bin=bin_number
-    )
-
     try:
+
+        url = BINX_URL.format(
+            bin=bin_number
+        )
 
         async with session.get(
             url,
@@ -91,19 +89,20 @@ async def _fetch_from_binx(
 
             html = await resp.text()
 
-            # REMOVE HTML TAGS
-            clean = re.sub(
-                r"<[^>]+>",
-                " ",
+            soup = BeautifulSoup(
                 html,
+                "html.parser",
             )
 
-            # NORMALIZE SPACING
-            clean = re.sub(
-                r"\s+",
-                " ",
-                clean,
-            ).upper()
+            text = soup.get_text(
+                separator="\n"
+            )
+
+            lines = [
+                line.strip().upper()
+                for line in text.splitlines()
+                if line.strip()
+            ]
 
             metadata = {
                 "brand": "UNKNOWN",
@@ -113,62 +112,71 @@ async def _fetch_from_binx(
             }
 
             # ----------------------------------------
+            # BANK
+            # BANK IS USUALLY THE LINE
+            # DIRECTLY AFTER THE BIN NUMBER
+            # ----------------------------------------
+            for i, line in enumerate(lines):
+
+                if line == bin_number:
+
+                    if i + 1 < len(lines):
+
+                        bank = lines[i + 1]
+
+                        if len(bank) > 3:
+
+                            metadata["bank"] = bank
+
+                    break
+
+            # ----------------------------------------
             # BRAND
             # ----------------------------------------
-            brand_match = re.search(
-                r"\b(VISA|MASTERCARD|AMEX|DISCOVER)\b",
-                clean,
-            )
+            for brand in [
+                "VISA",
+                "MASTERCARD",
+                "AMEX",
+                "DISCOVER",
+            ]:
 
-            if brand_match:
+                if brand in lines:
 
-                metadata["brand"] = (
-                    brand_match.group(1)
-                )
+                    metadata["brand"] = brand
+                    break
 
             # ----------------------------------------
             # TYPE
             # ----------------------------------------
-            type_match = re.search(
-                r"\b(DEBIT|CREDIT|PREPAID)\b",
-                clean,
-            )
+            for t in [
+                "DEBIT",
+                "CREDIT",
+                "PREPAID",
+            ]:
 
-            if type_match:
+                if t in lines:
 
-                metadata["type"] = (
-                    type_match.group(1)
-                )
+                    metadata["type"] = t
+                    break
 
             # ----------------------------------------
             # LEVEL
             # ----------------------------------------
-            level_match = re.search(
-                r"\b(CLASSIC|GOLD|PLATINUM|SIGNATURE|WORLD ELITE|WORLD|BUSINESS|INFINITE)\b",
-                clean,
-            )
+            for lvl in [
+                "CLASSIC",
+                "GOLD",
+                "PLATINUM",
+                "SIGNATURE",
+                "WORLD",
+                "WORLD ELITE",
+                "BUSINESS",
+                "INFINITE",
+            ]:
 
-            if level_match:
+                if lvl in lines:
 
-                metadata["level"] = (
-                    level_match.group(1)
-                )
-
-            # ----------------------------------------
-            # BANK
-            # TEXT BETWEEN BIN NUMBER AND COUNTRY
-            # ----------------------------------------
-            bank_match = re.search(
-                rf"{bin_number}\s+([A-Z0-9 .,&'\-]+?)\s+(UNITED STATES|CANADA|UNITED KINGDOM|UK)",
-                clean,
-            )
-
-            if bank_match:
-
-                metadata["bank"] = (
-                    bank_match.group(1)
-                    .strip()
-                )
+                    metadata["level"] = lvl
+                    break
 
             return metadata
 
@@ -191,11 +199,11 @@ async def _fetch_from_binlist(
     bin_number,
 ):
 
-    url = BINLIST_URL.format(
-        bin=bin_number
-    )
-
     try:
+
+        url = BINLIST_URL.format(
+            bin=bin_number
+        )
 
         async with session.get(
             url,
@@ -247,7 +255,7 @@ async def _fetch_from_binlist(
 
 
 # ----------------------------------------
-# FETCH BIN DATA
+# FETCH BIN METADATA
 # ----------------------------------------
 async def fetch_bin_metadata(
     session,
@@ -285,7 +293,7 @@ async def fetch_bin_metadata(
 
             metadata = fallback
 
-        # FILL MISSING FIELDS
+        # MERGE MISSING DATA
         elif fallback:
 
             for key in fallback:
@@ -304,6 +312,7 @@ async def fetch_bin_metadata(
                             fallback[key]
                         )
 
+        # FINAL FALLBACK
         if metadata is None:
 
             metadata = (
@@ -339,7 +348,7 @@ async def process_file(
     unique_bins = set()
 
     # ----------------------------------------
-    # PASS 1 → COLLECT UNIQUE BINS
+    # PASS 1 → FIND UNIQUE BINS
     # ----------------------------------------
     with input_path.open(
         "r",
@@ -353,7 +362,7 @@ async def process_file(
                 line
             )
 
-            for full_match, bin_number in matches:
+            for _, bin_number in matches:
 
                 unique_bins.add(
                     bin_number
@@ -415,7 +424,7 @@ async def process_file(
             ] = result
 
     # ----------------------------------------
-    # OUTPUT FILE
+    # CREATE OUTPUT FILE
     # ----------------------------------------
     tmp_fd, tmp_path_str = tempfile.mkstemp(
         suffix=".txt"
@@ -452,7 +461,7 @@ async def process_file(
                 outfile.write(line)
                 continue
 
-            output_parts = []
+            outputs = []
 
             for full_match, bin_number in matches:
 
@@ -463,19 +472,15 @@ async def process_file(
                     _unknown_metadata(),
                 )
 
-                clean_line = (
+                outputs.append(
                     full_match
                     + _format_metadata(
                         metadata
                     )
                 )
 
-                output_parts.append(
-                    clean_line
-                )
-
             outfile.write(
-                " | ".join(output_parts)
+                " | ".join(outputs)
                 + "\n"
             )
 
