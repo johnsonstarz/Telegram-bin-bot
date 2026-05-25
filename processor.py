@@ -4,6 +4,7 @@ import re
 import tempfile
 from pathlib import Path
 from typing import Tuple, Dict, Any
+from collections import Counter
 
 import aiohttp
 
@@ -149,6 +150,9 @@ async def process_file(
         "api_calls": 0,
         "cache_hits": 0,
         "errors": 0,
+        "bank_counts": Counter(),
+        "type_counts": Counter(),
+        "rows": [],
     }
 
     unique_bins = set()
@@ -275,6 +279,15 @@ async def process_file(
                     + suffix
                     + newline
                 )
+
+                stats["bank_counts"][metadata["bank"]] += 1
+                stats["type_counts"][metadata["type"]] += 1
+
+                stats["rows"].append({
+                    "line": line.rstrip("\r\n"),
+                    "bank": metadata["bank"],
+                    "type": metadata["type"],
+                })
 
             outfile.write(line)
 
