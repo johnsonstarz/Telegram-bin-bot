@@ -4,12 +4,18 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from telegram import Update
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
 )
 
@@ -48,88 +54,107 @@ async def handle_document(
     message = update.message
 
     if not message.document:
+        return
+
+    tg_file = await message.document.get_file()
+
+    downloads_dir = Path("downloads")
+    downloads_dir.mkdir(exist_ok=True)
+
+    input_path = (
+        downloads_dir
+        / message.document.file_name
+    )
+
+    await tg_file.download_to_drive(
+        custom_path=str(input_path)
+    )
+
+    context.user_data["input_path"] = str(
+        input_path
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "✅ Continue Processing",
+                callback_data="continue_process",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "❌ Cancel",
+                callback_data="cancel_process",
+            )
+        ],
+    ]
+
+    reply_markup = InlineKeyboardMarkup(
+        keyboard
+    )
+
+    await message.reply_text(
+        "File uploaded.\nChoose an action:",
+        reply_markup=reply_markup,
+    )
+
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if query.data == "cancel_process":
+
+        await query.edit_message_text(
+            "❌ Processing cancelled."
+        )
 
         return
 
-    processing = await message.reply_text(
-        "🔍 Processing your file...\nPlease wait."
-    )
+    if query.data == "continue_process":
 
-    input_path = None
-    output_path = None
-
-    try:
-
-        tg_file = await message.document.get_file()
-
-        downloads_dir = Path("downloads")
-        downloads_dir.mkdir(exist_ok=True)
-
-        input_path = (
-            downloads_dir
-            / message.document.file_name
+        await query.edit_message_text(
+            "🔍 Processing your file...\nPlease wait."
         )
 
-        await tg_file.download_to_drive(
-            custom_path=str(input_path)
+        input_path = Path(
+            context.user_data["input_path"]
         )
 
-        output_path, stats = await process_file(
-            input_path,
-            cache,
-        )
+        try:
 
-        with open(output_path, "rb") as f:
-
-            await message.reply_document(
-                document=f,
-                filename=f"processed_{message.document.file_name}",
-                caption=(
-                    f"✅ Processing Complete\n\n"
-                    f"Lines: {stats['total_lines']}\n"
-                    f"BINs: {stats['bins_found']}\n"
-                    f"API Calls: {stats['api_calls']}\n"
-                    f"Cache Hits: {stats['cache_hits']}\n"
-                    f"Errors: {stats['errors']}"
-                ),
-                read_timeout=120,
-                write_timeout=120,
-                connect_timeout=60,
-                pool_timeout=60,
+            output_path, stats = await process_file(
+                input_path,
+                cache,
             )
 
-    except Exception as e:
+            with open(output_path, "rb") as f:
 
-        logger.exception(e)
+                await query.message.reply_document(
+                    document=f,
+                    filename=f"processed_{input_path.name}",
+                    caption=(
+                        f"✅ Processing Complete\n\n"
+                        f"Lines: {stats['total_lines']}\n"
+                        f"BINs: {stats['bins_found']}\n"
+                        f"API Calls: {stats['api_calls']}\n"
+                        f"Cache Hits: {stats['cache_hits']}\n"
+                        f"Errors: {stats['errors']}"
+                    ),
+                )
 
-        await message.reply_text(
-            f"❌ Error:\n{e}"
-        )
+        except Exception as e:
 
-    finally:
+            logger.exception(e)
 
-        try:
-
-            await processing.delete()
-
-        except Exception:
-            pass
-
-        try:
-
-            if input_path and input_path.exists():
-                input_path.unlink()
-
-        except Exception:
-            pass
-
-        try:
-
-            if output_path and output_path.exists():
-                output_path.unlink()
-
-        except Exception:
-            pass
+            await query.message.reply_text(
+                f"❌ Error:\n{e}"
+            )
 
 
 def main():
@@ -143,10 +168,6 @@ def main():
     application = (
         Application.builder()
         .token(TOKEN)
-        .connect_timeout(30)
-        .read_timeout(60)
-        .write_timeout(60)
-        .pool_timeout(60)
         .build()
     )
 
@@ -158,6 +179,12 @@ def main():
         MessageHandler(
             filters.Document.ALL,
             handle_document,
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            button_handler
         )
     )
 
