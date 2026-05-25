@@ -8,25 +8,37 @@ import aiohttp
 
 BIN_PATTERN = re.compile(r"(\d{6})")
 
-API_URL = "https://lookup.binlist.net/{bin}"
+API_URL = "https://api.binx.io/bin/{bin}"
+
+MAX_CONCURRENT_LOOKUPS = 35
 
 
-async def lookup_bin(session, bin_number):
+async def lookup_bin(
+    session,
+    bin_number,
+):
 
     try:
 
         async with session.get(
-            API_URL.format(bin=bin_number)
+            API_URL.format(
+                bin=bin_number
+            ),
+            headers={
+                "User-Agent": "Mozilla/5.0",
+            },
         ) as response:
 
             if response.status != 200:
+
                 return None
 
             data = await response.json()
 
             return {
                 "scheme": (
-                    data.get("scheme")
+                    data.get("brand")
+                    or data.get("scheme")
                     or "UNKNOWN"
                 ).upper(),
 
@@ -36,13 +48,14 @@ async def lookup_bin(session, bin_number):
                 ).upper(),
 
                 "brand": (
-                    data.get("brand")
+                    data.get("level")
+                    or data.get("category")
                     or "UNKNOWN"
                 ).upper(),
 
                 "bank": (
-                    data.get("bank", {})
-                    .get("name")
+                    data.get("bank_name")
+                    or data.get("bank")
                     or "UNKNOWN"
                 ).upper(),
             }
@@ -52,7 +65,10 @@ async def lookup_bin(session, bin_number):
         return None
 
 
-async def process_file(input_path, cache):
+async def process_file(
+    input_path,
+    cache,
+):
 
     tmp_fd, tmp_path = tempfile.mkstemp(
         suffix=".txt"
@@ -60,6 +76,10 @@ async def process_file(input_path, cache):
 
     total = 0
     bins = 0
+
+    semaphore = asyncio.Semaphore(
+        MAX_CONCURRENT_LOOKUPS
+    )
 
     async with aiohttp.ClientSession() as session:
 
@@ -72,56 +92,72 @@ async def process_file(input_path, cache):
 
             lines = infile.readlines()
 
+        async def process_line(
+            line,
+        ):
+
+            match = BIN_PATTERN.search(
+                line
+            )
+
+            if not match:
+
+                return line
+
+            bin_number = match.group(1)
+
+            async with semaphore:
+
+                info = await lookup_bin(
+                    session,
+                    bin_number,
+                )
+
+            if info:
+
+                return (
+                    f"{line.strip()} "
+                    f"| {info['scheme']} "
+                    f"| {info['type']} "
+                    f"| {info['brand']} "
+                    f"| {info['bank']}\n"
+                )
+
+            return (
+                f"{line.strip()} "
+                f"| UNKNOWN "
+                f"| UNKNOWN "
+                f"| UNKNOWN "
+                f"| UNKNOWN\n"
+            )
+
+        tasks = []
+
+        for line in lines:
+
+            total += 1
+
+            if BIN_PATTERN.search(line):
+
+                bins += 1
+
+            tasks.append(
+                process_line(line)
+            )
+
+        processed_lines = await asyncio.gather(
+            *tasks
+        )
+
         with open(
             tmp_path,
             "w",
             encoding="utf-8",
         ) as outfile:
 
-            for line in lines:
-
-                total += 1
-
-                match = BIN_PATTERN.search(
-                    line
-                )
-
-                if match:
-
-                    bins += 1
-
-                    bin_number = match.group(1)
-
-                    info = await lookup_bin(
-                        session,
-                        bin_number,
-                    )
-
-                    if info:
-
-                        new_line = (
-                            f"{line.strip()} "
-                            f"| {info['scheme']} "
-                            f"| {info['type']} "
-                            f"| {info['brand']} "
-                            f"| {info['bank']}\n"
-                        )
-
-                    else:
-
-                        new_line = (
-                            f"{line.strip()} "
-                            f"| UNKNOWN | UNKNOWN "
-                            f"| UNKNOWN | UNKNOWN\n"
-                        )
-
-                    outfile.write(
-                        new_line
-                    )
-
-                else:
-
-                    outfile.write(line)
+            outfile.writelines(
+                processed_lines
+            )
 
     stats = {
         "total_lines": total,
