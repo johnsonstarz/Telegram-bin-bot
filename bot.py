@@ -4,12 +4,18 @@ import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update, Document
+from telegram import (
+    Update,
+    Document,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     ContextTypes,
+    CallbackQueryHandler,
     filters,
 )
 
@@ -36,8 +42,40 @@ cache = BINCache()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "CONTINUE",
+                callback_data="continue",
+            )
+        ]
+    ]
+
+    reply_markup = InlineKeyboardMarkup(
+        keyboard
+    )
+
     await update.message.reply_text(
-        "Send me a .txt file with BINs."
+        "⚠️ PRIVACY NOTICE\n\n"
+        "Please save all files after processing.\n\n"
+        "Chats, uploads, and generated files may automatically clear or delete over time. "
+        "Once files are deleted on your end, they cannot be recovered.\n\n"
+        "Press CONTINUE to proceed.",
+        reply_markup=reply_markup,
+    )
+
+
+async def handle_continue(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    await query.message.reply_text(
+        "📂 Upload your TXT file to begin processing."
     )
 
 
@@ -118,6 +156,13 @@ def main():
 
     app.add_handler(
         CommandHandler("start", start)
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            handle_continue,
+            pattern="^continue$",
+        )
     )
 
     app.add_handler(
