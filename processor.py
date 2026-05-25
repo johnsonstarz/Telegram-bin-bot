@@ -11,7 +11,10 @@ from cache import BINCache
 
 logger = logging.getLogger(__name__)
 
-# BIN patterns
+# Detect:
+# BIN : 448297
+# BIN:448297
+# BIN-448297
 BIN_PATTERN = re.compile(
     r"BIN\s*[:\-]\s*(\d{6})",
     re.IGNORECASE,
@@ -21,10 +24,10 @@ BIN_PATTERN = re.compile(
 BINX_URL = "https://binx.vip/bin/{bin}"
 BINLIST_URL = "https://lookup.binlist.net/{bin}"
 
-# Process 20 at once
+# Process 20 lookups simultaneously
 MAX_CONCURRENT_LOOKUPS = 20
 
-# Request timeout
+# Timeout
 HTTP_TIMEOUT = aiohttp.ClientTimeout(total=10)
 
 
@@ -126,6 +129,7 @@ async def _fetch_from_binx(
                 "TD BANK",
                 "PNC",
                 "US BANK",
+                "NAVY FEDERAL",
             ]
 
             for b in banks:
@@ -243,6 +247,7 @@ async def fetch_bin_metadata(
             bin_number,
         )
 
+        # Fallback to binlist
         if (
             metadata is None
             or metadata["brand"] == "UNKNOWN"
@@ -284,6 +289,7 @@ async def process_file(
 
     unique_bins = set()
 
+    # PASS 1 → collect ALL BINs
     with input_path.open(
         "r",
         encoding="utf-8",
@@ -292,14 +298,14 @@ async def process_file(
 
         for line in fh:
 
-            match = BIN_PATTERN.search(
+            matches = BIN_PATTERN.findall(
                 line
             )
 
-            if match:
+            for bin_number in matches:
 
                 unique_bins.add(
-                    match.group(1)
+                    bin_number
                 )
 
     semaphore = asyncio.Semaphore(
@@ -308,6 +314,7 @@ async def process_file(
 
     bin_metadata = {}
 
+    # FETCH ALL UNIQUE BINS
     async with aiohttp.ClientSession(
         headers={
             "User-Agent": "BINLookupBot/1.0"
@@ -354,6 +361,7 @@ async def process_file(
                 bin_num
             ] = result
 
+    # WRITE OUTPUT FILE
     tmp_fd, tmp_path_str = tempfile.mkstemp(
         suffix=".txt"
     )
@@ -380,30 +388,11 @@ async def process_file(
 
             stats["total_lines"] += 1
 
-            match = BIN_PATTERN.search(
+            matches = BIN_PATTERN.findall(
                 line
             )
 
-            if match:
-
-                stats["bins_found"] += 1
-
-                bin_number = match.group(
-                    1
-                )
-
-                metadata = (
-                    bin_metadata.get(
-                        bin_number,
-                        _unknown_metadata(),
-                    )
-                )
-
-                suffix = (
-                    _format_metadata(
-                        metadata
-                    )
-                )
+            if matches:
 
                 stripped = line.rstrip(
                     "\r\n"
@@ -413,11 +402,26 @@ async def process_file(
                     len(stripped):
                 ]
 
-                line = (
-                    stripped
-                    + suffix
-                    + newline
-                )
+                for bin_number in matches:
+
+                    stats["bins_found"] += 1
+
+                    metadata = (
+                        bin_metadata.get(
+                            bin_number,
+                            _unknown_metadata(),
+                        )
+                    )
+
+                    suffix = (
+                        _format_metadata(
+                            metadata
+                        )
+                    )
+
+                    stripped += suffix
+
+                line = stripped + newline
 
             outfile.write(line)
 
