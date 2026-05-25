@@ -206,7 +206,5 @@ def main() -> None:
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
-import asyncio
-
 if __name__ == "__main__":
     main()
