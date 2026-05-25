@@ -73,6 +73,36 @@ async def handle_document(
         "⚠️ Save your file before continuing.",
         reply_markup=reply_markup,
     )
+async def output_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+    await query.answer()
+    output_path = Path(context.user_data["output_path"])
+    input_name = context.user_data["input_name"]
+    lines = output_path.read_text().splitlines()
+    if query.data == "out_original":
+        filtered = lines
+        label = "original"
+    elif query.data == "out_sorted":
+        filtered = sorted(lines)
+        label = "sorted"
+    elif query.data == "out_debit":
+        filtered = [l for l in lines if "DEBIT" in l.upper()]
+        label = "debit_only"
+    elif query.data == "out_credit":
+        filtered = [l for l in lines if "CREDIT" in l.upper()]
+        label = "credit_only"
+    else:
+        return
+    out_text = "\n".join(filtered)
+    out_bytes = out_text.encode("utf-8")
+    await query.message.reply_document(
+        document=out_bytes,
+        filename=f"{label}_{input_name}",
+        caption=f"✅ {label.replace('_', ' ').title()} — {len(filtered)} lines",
+    )
 async def button_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -96,26 +126,24 @@ async def button_handler(
                 input_path,
                 cache,
             )
-            analysis_text = (
-                "📊 FILE ANALYSIS\n\n"
-            )
-            top_banks = stats["bank_counts"].most_common(3)
-            for bank, count in top_banks:
-                analysis_text += (
-                    f"{count}x {bank}\n"
-                )
+            analysis_text = "📊 FILE ANALYSIS\n\n"
+            for bank, count in stats["bank_counts"].most_common():
+                analysis_text += f"{count}x {bank}\n"
             analysis_text += (
                 f"\nDebit: {stats['debit_count']}\n"
                 f"Credit: {stats['credit_count']}\n\n"
-                "Choose Output:\n"
-                "[ ORIGINAL ]\n"
-                "[ SORTED 🏦 ]\n"
-                "[ DEBIT ONLY ]\n"
-                "[ CREDIT ONLY ]"
+                "Choose Output:"
             )
-            await query.message.reply_text(
-                analysis_text
-            )
+            keyboard = [
+                [InlineKeyboardButton("ORIGINAL", callback_data="out_original")],
+                [InlineKeyboardButton("SORTED 🏦", callback_data="out_sorted")],
+                [InlineKeyboardButton("DEBIT ONLY", callback_data="out_debit")],
+                [InlineKeyboardButton("CREDIT ONLY", callback_data="out_credit")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.message.reply_text(analysis_text, reply_markup=reply_markup)
+            context.user_data["output_path"] = str(output_path)
+            context.user_data["input_name"] = input_path.name
             with open(output_path, "rb") as f:
                 await query.message.reply_document(
                     document=f,
@@ -154,9 +182,10 @@ def main():
         )
     )
     application.add_handler(
-        CallbackQueryHandler(
-            button_handler
-        )
+        CallbackQueryHandler(output_handler, pattern="^out_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(button_handler)
     )
     logger.info("Starting bot")
     application.run_polling()
