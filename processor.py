@@ -11,7 +11,7 @@ from cache import BINCache
 
 logger = logging.getLogger(__name__)
 
-# Detect:
+# Match:
 # BIN : 448297
 # BIN:448297
 # BIN-448297
@@ -78,97 +78,61 @@ async def _fetch_from_binx(
                 "bank": "UNKNOWN",
             }
 
-            # BRAND
-            brands = [
-                "VISA",
-                "MASTERCARD",
-                "AMEX",
-                "DISCOVER",
-                "JCB",
-                "DINERS",
-            ]
+            # ---------- NETWORK ----------
+            network_match = re.search(
+                r"NETWORK\s+([A-Z ]+)",
+                upper,
+            )
 
-            for brand in brands:
+            if network_match:
 
-                if brand in upper:
-
-                    metadata["brand"] = brand
-                    break
-
-            # TYPE
-            types = [
-                "DEBIT",
-                "CREDIT",
-                "PREPAID",
-                "BUSINESS",
-            ]
-
-            for t in types:
-
-                if t in upper:
-
-                    metadata["type"] = t
-                    break
-
-            # LEVEL
-            levels = [
-                "CLASSIC",
-                "GOLD",
-                "PLATINUM",
-                "SIGNATURE",
-                "WORLD",
-                "WORLD ELITE",
-                "BUSINESS",
-                "INFINITE",
-                "ELECTRON",
-            ]
-
-            for lvl in levels:
-
-                if lvl in upper:
-
-                    metadata["level"] = lvl
-                    break
-
-            # DYNAMIC BANK EXTRACTION
-            bank_patterns = [
-
-                r"BANK\s*[:\-]\s*([A-Z0-9 .,&'\-]+)",
-
-                r"ISSUER\s*[:\-]\s*([A-Z0-9 .,&'\-]+)",
-
-                r"FINANCIAL INSTITUTION\s*[:\-]\s*([A-Z0-9 .,&'\-]+)",
-
-            ]
-
-            for pattern in bank_patterns:
-
-                match = re.search(
-                    pattern,
-                    upper,
+                metadata["brand"] = (
+                    network_match
+                    .group(1)
+                    .strip()
                 )
 
-                if match:
+            # ---------- TYPE ----------
+            type_match = re.search(
+                r"TYPE\s+([A-Z ]+)",
+                upper,
+            )
 
-                    extracted = (
-                        match.group(1)
-                        .strip()
-                    )
+            if type_match:
 
-                    extracted = extracted.split(
-                        "|"
-                    )[0].strip()
+                metadata["type"] = (
+                    type_match
+                    .group(1)
+                    .strip()
+                )
 
-                    if (
-                        extracted
-                        and len(extracted) > 2
-                    ):
+            # ---------- CATEGORY ----------
+            category_match = re.search(
+                r"CATEGORY\s+([A-Z ]+)",
+                upper,
+            )
 
-                        metadata["bank"] = (
-                            extracted
-                        )
+            if category_match:
 
-                        break
+                metadata["level"] = (
+                    category_match
+                    .group(1)
+                    .strip()
+                )
+
+            # ---------- BANK ----------
+            bank_match = re.search(
+                r"BANK\s+([A-Z0-9 .,&'\-]+)",
+                upper,
+            )
+
+            if bank_match:
+
+                metadata["bank"] = (
+                    bank_match
+                    .group(1)
+                    .strip()
+                )
 
             return metadata
 
@@ -268,11 +232,15 @@ async def fetch_bin_metadata(
             bin_number,
         )
 
-        # Fallback to binlist
-        if (
-            metadata is None
-            or metadata["brand"] == "UNKNOWN"
-        ):
+        # FALLBACK TO BINLIST
+        if metadata is None:
+
+            metadata = await _fetch_from_binlist(
+                session,
+                bin_number,
+            )
+
+        else:
 
             fallback = await _fetch_from_binlist(
                 session,
@@ -281,23 +249,21 @@ async def fetch_bin_metadata(
 
             if fallback:
 
-                # Fill missing fields only
                 for key in fallback:
 
                     if (
-                        metadata is None
-                        or metadata[key]
+                        metadata[key]
                         == "UNKNOWN"
                     ):
 
-                        if fallback[key] != "UNKNOWN":
+                        if (
+                            fallback[key]
+                            != "UNKNOWN"
+                        ):
 
-                            if metadata is None:
-                                metadata = {}
-
-                            metadata[key] = fallback[
-                                key
-                            ]
+                            metadata[key] = (
+                                fallback[key]
+                            )
 
         if metadata is None:
 
