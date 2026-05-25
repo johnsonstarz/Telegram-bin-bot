@@ -105,21 +105,42 @@ lines = output_path.read_text(
     errors="ignore",
 ).splitlines()
 if query.data == "out_original":
-    filtered = lines
+    filtered = [
+        line for line in lines
+        if line.strip()
+    ]
     label = "original"
 elif query.data == "out_sorted":
-    filtered = sorted(lines)
+    filtered = sorted(
+        [
+            line for line in lines
+            if line.strip()
+        ],
+        key=lambda x: (
+            x.split("BANK - ")[-1]
+            if "BANK - " in x
+            else x
+        )
+    )
     label = "sorted"
 elif query.data == "out_debit":
     filtered = [
-        l for l in lines
-        if "DEBIT" in l.upper()
+        line for line in lines
+        if (
+            line.strip()
+            and "TYPE - DEBIT"
+            in line.upper()
+        )
     ]
     label = "debit_only"
 elif query.data == "out_credit":
     filtered = [
-        l for l in lines
-        if "CREDIT" in l.upper()
+        line for line in lines
+        if (
+            line.strip()
+            and "TYPE - CREDIT"
+            in line.upper()
+        )
     ]
     label = "credit_only"
 else:
@@ -132,7 +153,8 @@ await query.message.reply_document(
     document=out_bytes,
     filename=f"{label}_{input_name}",
     caption=(
-        f"✅ {label.replace('_', ' ').title()}"
+        f"✅ "
+        f"{label.replace('_', ' ').title()}"
         f" — {len(filtered)} lines"
     ),
 )
