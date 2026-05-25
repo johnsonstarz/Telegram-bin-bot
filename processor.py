@@ -89,13 +89,20 @@ async def _fetch_from_binx(
             if resp.status != 200:
                 return None
 
-            text = await resp.text()
+            html = await resp.text()
 
-            # CLEAN HTML SPACING
+            # REMOVE HTML TAGS
+            clean = re.sub(
+                r"<[^>]+>",
+                " ",
+                html,
+            )
+
+            # NORMALIZE SPACING
             clean = re.sub(
                 r"\s+",
                 " ",
-                text,
+                clean,
             ).upper()
 
             metadata = {
@@ -106,64 +113,24 @@ async def _fetch_from_binx(
             }
 
             # ----------------------------------------
-            # BANK
-            # Example:
-            # 473703 WELLS FARGO BANK...
-            # UNITED STATES • CLASSIC
+            # BRAND
             # ----------------------------------------
-            bank_match = re.search(
-                rf"{bin_number}\s+([A-Z0-9 .,&'\-]+?)\s+UNITED STATES",
+            brand_match = re.search(
+                r"\b(VISA|MASTERCARD|AMEX|DISCOVER)\b",
                 clean,
             )
 
-            if bank_match:
-
-                metadata["bank"] = (
-                    bank_match.group(1)
-                    .strip()
-                )
-
-            # ----------------------------------------
-            # LEVEL
-            # Example:
-            # UNITED STATES • CLASSIC
-            # ----------------------------------------
-            level_match = re.search(
-                r"UNITED STATES\s*•\s*([A-Z ]+)",
-                clean,
-            )
-
-            if level_match:
-
-                metadata["level"] = (
-                    level_match.group(1)
-                    .strip()
-                )
-
-            # ----------------------------------------
-            # NETWORK
-            # Example:
-            # NETWORK VISA
-            # ----------------------------------------
-            network_match = re.search(
-                r"NETWORK\s+([A-Z]+)",
-                clean,
-            )
-
-            if network_match:
+            if brand_match:
 
                 metadata["brand"] = (
-                    network_match.group(1)
-                    .strip()
+                    brand_match.group(1)
                 )
 
             # ----------------------------------------
             # TYPE
-            # Example:
-            # TYPE DEBIT
             # ----------------------------------------
             type_match = re.search(
-                r"TYPE\s+([A-Z]+)",
+                r"\b(DEBIT|CREDIT|PREPAID)\b",
                 clean,
             )
 
@@ -171,6 +138,35 @@ async def _fetch_from_binx(
 
                 metadata["type"] = (
                     type_match.group(1)
+                )
+
+            # ----------------------------------------
+            # LEVEL
+            # ----------------------------------------
+            level_match = re.search(
+                r"\b(CLASSIC|GOLD|PLATINUM|SIGNATURE|WORLD ELITE|WORLD|BUSINESS|INFINITE)\b",
+                clean,
+            )
+
+            if level_match:
+
+                metadata["level"] = (
+                    level_match.group(1)
+                )
+
+            # ----------------------------------------
+            # BANK
+            # TEXT BETWEEN BIN NUMBER AND COUNTRY
+            # ----------------------------------------
+            bank_match = re.search(
+                rf"{bin_number}\s+([A-Z0-9 .,&'\-]+?)\s+(UNITED STATES|CANADA|UNITED KINGDOM|UK)",
+                clean,
+            )
+
+            if bank_match:
+
+                metadata["bank"] = (
+                    bank_match.group(1)
                     .strip()
                 )
 
@@ -279,16 +275,17 @@ async def fetch_bin_metadata(
             bin_number,
         )
 
-        # FALLBACK TO BINLIST
         fallback = await _fetch_from_binlist(
             session,
             bin_number,
         )
 
+        # IF BINX FAILED
         if metadata is None:
 
             metadata = fallback
 
+        # FILL MISSING FIELDS
         elif fallback:
 
             for key in fallback:
@@ -466,7 +463,7 @@ async def process_file(
                     _unknown_metadata(),
                 )
 
-                clean = (
+                clean_line = (
                     full_match
                     + _format_metadata(
                         metadata
@@ -474,7 +471,7 @@ async def process_file(
                 )
 
                 output_parts.append(
-                    clean
+                    clean_line
                 )
 
             outfile.write(
