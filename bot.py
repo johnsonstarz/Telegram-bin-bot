@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -34,6 +35,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 cache = BINCache()
+
+
+def split_into_blocks(text):
+
+    pattern = r'(\+ -{4,}.*?\+.*?\+ -{4,}.*?\+.*?(?=\+ -{4,}|\Z))'
+
+    matches = re.findall(
+        pattern,
+        text,
+        re.DOTALL
+    )
+
+    return [
+        block.strip()
+        for block in matches
+        if block.strip()
+    ]
+
+
+def get_bank_from_block(block):
+
+    match = re.search(
+        r'BANK\s*-\s*(.+)',
+        block,
+        re.IGNORECASE
+    )
+
+    if match:
+        return match.group(1).strip()
+
+    return ""
 
 
 async def start(
@@ -105,6 +137,7 @@ async def output_handler(
 ):
 
     query = update.callback_query
+
     await query.answer()
 
     output_path = Path(
@@ -113,34 +146,23 @@ async def output_handler(
 
     input_name = context.user_data["input_name"]
 
-    lines = output_path.read_text(
+    text = output_path.read_text(
         encoding="utf-8",
         errors="ignore",
-    ).splitlines()
+    )
+
+    blocks = split_into_blocks(text)
 
     if query.data == "out_original":
 
-        filtered = [
-            line
-            for line in lines
-            if line.strip()
-        ]
-
+        filtered = blocks
         label = "original"
 
     elif query.data == "out_sorted":
 
         filtered = sorted(
-            [
-                line
-                for line in lines
-                if line.strip()
-            ],
-            key=lambda x: (
-                x.split("BANK - ")[-1]
-                if "BANK - " in x
-                else x
-            )
+            blocks,
+            key=get_bank_from_block
         )
 
         label = "sorted"
@@ -148,12 +170,10 @@ async def output_handler(
     elif query.data == "out_debit":
 
         filtered = [
-            line
-            for line in lines
-            if (
-                line.strip()
-                and "TYPE - DEBIT" in line.upper()
-            )
+            block
+            for block in blocks
+            if "TYPE - DEBIT"
+            in block.upper()
         ]
 
         label = "debit_only"
@@ -161,12 +181,10 @@ async def output_handler(
     elif query.data == "out_credit":
 
         filtered = [
-            line
-            for line in lines
-            if (
-                line.strip()
-                and "TYPE - CREDIT" in line.upper()
-            )
+            block
+            for block in blocks
+            if "TYPE - CREDIT"
+            in block.upper()
         ]
 
         label = "credit_only"
@@ -174,7 +192,7 @@ async def output_handler(
     else:
         return
 
-    out_text = "\n".join(filtered)
+    out_text = "\n\n".join(filtered)
 
     temp_output = Path(
         f"{label}_{input_name}"
@@ -193,7 +211,7 @@ async def output_handler(
             caption=(
                 f"✅ "
                 f"{label.replace('_', ' ').title()}"
-                f" — {len(filtered)} lines"
+                f" — {len(filtered)} records"
             ),
         )
 
