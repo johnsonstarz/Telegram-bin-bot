@@ -38,34 +38,42 @@ cache = BINCache()
 
 def split_into_blocks(text):
 
+    lines = text.splitlines()
+
     blocks = []
 
-    current_block = []
-
-    lines = text.splitlines()
+    current = []
 
     for line in lines:
 
         if (
             line.startswith("+ -------------")
-            and current_block
+            and current
         ):
 
-            joined = "\n".join(current_block)
+            full_block = "\n".join(current)
 
-            if "BIN :" in joined:
-                blocks.append(joined)
+            if (
+                "TYPE - DEBIT" in full_block.upper()
+                or
+                "TYPE - CREDIT" in full_block.upper()
+            ):
+                blocks.append(full_block)
 
-            current_block = []
+            current = []
 
-        current_block.append(line)
+        current.append(line)
 
-    if current_block:
+    if current:
 
-        joined = "\n".join(current_block)
+        full_block = "\n".join(current)
 
-        if "BIN :" in joined:
-            blocks.append(joined)
+        if (
+            "TYPE - DEBIT" in full_block.upper()
+            or
+            "TYPE - CREDIT" in full_block.upper()
+        ):
+            blocks.append(full_block)
 
     return blocks
 
