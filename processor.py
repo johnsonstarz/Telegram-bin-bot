@@ -12,9 +12,12 @@ from cache import BINCache
 
 logger = logging.getLogger(__name__)
 
-BIN_PATTERN = re.compile(r"BIN\s*[:\-]\s*(\d{6})", re.IGNORECASE)
+BIN_PATTERN = re.compile(
+    r"BIN\s*:\s*(\d{6})",
+    re.IGNORECASE,
+)
 
-BINX_API_URL = "https://api.binx.vip/api/bins/{bin}"
+BINX_API_URL = "https://lookup.binlist.net/{bin}"
 
 MAX_CONCURRENT_LOOKUPS = 20
 
@@ -22,6 +25,7 @@ HTTP_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
 def _unknown_metadata():
+
     return {
         "brand": "UNKNOWN",
         "type": "UNKNOWN",
@@ -40,9 +44,14 @@ def _format_metadata(metadata):
     )
 
 
-async def _fetch_from_binx(session, bin_number):
+async def _fetch_from_binx(
+    session,
+    bin_number,
+):
 
-    url = BINX_API_URL.format(bin=bin_number)
+    url = BINX_API_URL.format(
+        bin=bin_number
+    )
 
     try:
 
@@ -52,38 +61,36 @@ async def _fetch_from_binx(session, bin_number):
         ) as resp:
 
             if resp.status != 200:
+
                 logger.error(
-                    "BINX API status %s for %s",
+                    "API status %s for %s",
                     resp.status,
                     bin_number,
                 )
+
                 return None
 
             data = await resp.json()
 
-            info = data.get("data")
-
-            if not info:
-                return None
-
             return {
                 "brand": (
-                    info.get("brand")
+                    data.get("scheme")
                     or "UNKNOWN"
                 ).upper(),
 
                 "type": (
-                    info.get("type")
+                    data.get("type")
                     or "UNKNOWN"
                 ).upper(),
 
                 "level": (
-                    info.get("category")
+                    data.get("brand")
                     or "UNKNOWN"
                 ).upper(),
 
                 "bank": (
-                    info.get("bank")
+                    data.get("bank", {})
+                    .get("name")
                     or "UNKNOWN"
                 ).upper(),
             }
@@ -91,7 +98,7 @@ async def _fetch_from_binx(session, bin_number):
     except Exception as e:
 
         logger.error(
-            "BINX API failed for %s: %s",
+            "Lookup failed for %s: %s",
             bin_number,
             e,
         )
@@ -110,16 +117,12 @@ async def fetch_bin_metadata(
     cached = cache.get(bin_number)
 
     if cached is not None:
+
         stats["cache_hits"] += 1
+
         return cached
 
     async with semaphore:
-
-        cached = cache.get(bin_number)
-
-        if cached is not None:
-            stats["cache_hits"] += 1
-            return cached
 
         metadata = await _fetch_from_binx(
             session,
@@ -127,6 +130,7 @@ async def fetch_bin_metadata(
         )
 
         if metadata is None:
+
             metadata = _unknown_metadata()
 
         stats["api_calls"] += 1
@@ -165,10 +169,15 @@ async def process_file(
 
         for line in fh:
 
-            match = BIN_PATTERN.search(line)
+            match = BIN_PATTERN.search(
+                line
+            )
 
             if match:
-                unique_bins.add(match.group(1))
+
+                unique_bins.add(
+                    match.group(1)
+                )
 
     logger.info(
         "Found %d unique BINs",
@@ -224,7 +233,9 @@ async def process_file(
 
         else:
 
-            bin_metadata[bin_num] = result
+            bin_metadata[
+                bin_num
+            ] = result
 
     tmp_fd, tmp_path_str = tempfile.mkstemp(
         suffix=".txt"
@@ -249,7 +260,9 @@ async def process_file(
 
             stats["total_lines"] += 1
 
-            match = BIN_PATTERN.search(line)
+            match = BIN_PATTERN.search(
+                line
+            )
 
             if match:
 
@@ -279,15 +292,6 @@ async def process_file(
                     + suffix
                     + newline
                 )
-
-                stats["bank_counts"][metadata["bank"]] += 1
-                stats["type_counts"][metadata["type"]] += 1
-
-                stats["rows"].append({
-                    "line": line.rstrip("\r\n"),
-                    "bank": metadata["bank"],
-                    "type": metadata["type"],
-                })
 
             outfile.write(line)
 
